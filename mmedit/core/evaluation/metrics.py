@@ -1,12 +1,14 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import math
+import os
 
 import cv2
 import mmcv
 import numpy as np
-from scipy.ndimage.filters import convolve
+from scipy.ndimage import convolve
 from scipy.special import gamma
 
+from mmedit.datasets.pipelines.matlab_like_resize import MATLABLikeResize
 from .metric_utils import gauss_gradient
 
 
@@ -214,6 +216,54 @@ def psnr(img1, img2, crop_border=0, input_order='HWC', convert_to=None):
     return 20. * np.log10(255. / np.sqrt(mse_value))
 
 
+def mae(img1, img2, crop_border=0, input_order='HWC', convert_to=None):
+    """Calculate mean average error for evaluation.
+
+    Args:
+        img1 (ndarray): Images with range [0, 255].
+        img2 (ndarray): Images with range [0, 255].
+        crop_border (int): Cropped pixels in each edges of an image. These
+            pixels are not involved in the PSNR calculation. Default: 0.
+        input_order (str): Whether the input order is 'HWC' or 'CHW'.
+            Default: 'HWC'.
+        convert_to (str): Whether to convert the images to other color models.
+            If None, the images are not altered. Options are 'RGB2Y', 'BGR2Y'
+            and None. Default: None.
+
+    Returns:
+        float: mae result.
+    """
+
+    assert img1.shape == img2.shape, (
+        f'Image shapes are different: {img1.shape}, {img2.shape}.')
+    if input_order not in ['HWC', 'CHW']:
+        raise ValueError(
+            f'Wrong input_order {input_order}. Supported input_orders are '
+            '"HWC" and "CHW"')
+    img1 = reorder_image(img1, input_order=input_order)
+    img2 = reorder_image(img2, input_order=input_order)
+
+    img1, img2 = img1.astype(np.float32), img2.astype(np.float32)
+    img1, img2 = img1 / 255., img2 / 255.
+    if isinstance(convert_to, str) and convert_to.lower() == 'rgb2y':
+        img1 = mmcv.rgb2ycbcr(img1, y_only=True)
+        img2 = mmcv.rgb2ycbcr(img2, y_only=True)
+    elif isinstance(convert_to, str) and convert_to.lower() == 'bgr2y':
+        img1 = mmcv.bgr2ycbcr(img1, y_only=True)
+        img2 = mmcv.bgr2ycbcr(img2, y_only=True)
+    elif convert_to is not None:
+        raise ValueError('Wrong color model. Supported values are '
+                         '"RGB2Y", "BGR2Y" and None.')
+
+    if crop_border != 0:
+        img1 = img1[crop_border:-crop_border, crop_border:-crop_border, None]
+        img2 = img2[crop_border:-crop_border, crop_border:-crop_border, None]
+
+    l1_value = np.mean(np.abs(img1 - img2))
+
+    return l1_value
+
+
 def _ssim(img1, img2):
     """Calculate SSIM (structural similarity) for one channel images.
 
@@ -316,7 +366,10 @@ class L1Evaluation:
 
     def __call__(self, data_dict):
         gt = data_dict['gt_img']
-        pred = data_dict['fake_res']
+        if 'fake_img' in data_dict:
+            pred = data_dict.get('fake_img')
+        else:
+            pred = data_dict.get('fake_res')
         mask = data_dict.get('mask', None)
 
         from mmedit.models.losses.pixelwise_loss import l1_loss
@@ -421,9 +474,10 @@ def niqe_core(img,
     num_block_w = math.floor(w / block_size_w)
     img = img[0:num_block_h * block_size_h, 0:num_block_w * block_size_w]
 
-    distparam = []  # dist param is actually the multiscale features.
+    distparam = []  # dist param is actually the multiscale features
     for scale in (1, 2):  # perform on two scales (1, 2)
         mu = convolve(img, gaussian_window, mode='nearest')
+
         sigma = np.sqrt(
             np.abs(
                 convolve(np.square(img), gaussian_window, mode='nearest') -
@@ -443,29 +497,26 @@ def niqe_core(img,
                 feat.append(compute_feature(block))
 
         distparam.append(np.array(feat))
-        # matlab bicubic downsample with anti-aliasing
-        # for simplicity, now we use opencv instead, which will result in
-        # a slight difference.
+
+        # matlab-like bicubic downsample with anti-aliasing
         if scale == 1:
-            h, w = img.shape
-            img = cv2.resize(
-                img / 255., (w // 2, h // 2), interpolation=cv2.INTER_LINEAR)
-            img = img * 255.
+            resize = MATLABLikeResize(keys=None, scale=0.5)
+            img = resize._resize(img[:, :, np.newaxis] / 255.)[:, :, 0] * 255.
 
     distparam = np.concatenate(distparam, axis=1)
 
     # fit a MVG (multivariate Gaussian) model to distorted patch features
     mu_distparam = np.nanmean(distparam, axis=0)
-    cov_distparam = np.cov(distparam, rowvar=False)  # TODO: use nancov
+    distparam_no_nan = distparam[~np.isnan(distparam).any(axis=1)]
+    cov_distparam = np.cov(distparam_no_nan, rowvar=False)
 
     # compute niqe quality, Eq. 10 in the paper
     invcov_param = np.linalg.pinv((cov_pris_param + cov_distparam) / 2)
     quality = np.matmul(
         np.matmul((mu_pris_param - mu_distparam), invcov_param),
         np.transpose((mu_pris_param - mu_distparam)))
-    quality = np.sqrt(quality)
 
-    return quality
+    return np.squeeze(np.sqrt(quality))
 
 
 def niqe(img, crop_border, input_order='HWC', convert_to='y'):
@@ -496,7 +547,8 @@ def niqe(img, crop_border, input_order='HWC', convert_to='y'):
     """
 
     # we use the official params estimated from the pristine dataset.
-    niqe_pris_params = np.load('mmedit/core/evaluation/niqe_pris_params.npz')
+    niqe_pris_params = np.load(
+        os.path.join(os.path.dirname(__file__), 'niqe_pris_params.npz'))
     mu_pris_param = niqe_pris_params['mu_pris_param']
     cov_pris_param = niqe_pris_params['cov_pris_param']
     gaussian_window = niqe_pris_params['gaussian_window']
@@ -512,6 +564,9 @@ def niqe(img, crop_border, input_order='HWC', convert_to='y'):
 
     if crop_border != 0:
         img = img[crop_border:-crop_border, crop_border:-crop_border]
+
+    # round to follow official implementation
+    img = img.round()
 
     niqe_result = niqe_core(img, mu_pris_param, cov_pris_param,
                             gaussian_window)

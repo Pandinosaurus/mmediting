@@ -16,7 +16,7 @@ from mmedit.models import BasicRestorer, build_model
 
 
 class TensorRTRestorerGenerator(nn.Module):
-    """Inner class for tensorrt restorer model inference
+    """Inner class for tensorrt restorer model inference.
 
     Args:
         trt_file (str): The path to the tensorrt file.
@@ -44,7 +44,7 @@ class TensorRTRestorerGenerator(nn.Module):
 
 
 class TensorRTRestorer(nn.Module):
-    """A warper class for tensorrt restorer
+    """A warper class for tensorrt restorer.
 
     Args:
         base_model (Any): The base model build from config.
@@ -64,7 +64,7 @@ class TensorRTRestorer(nn.Module):
 
 
 class TensorRTEditing(nn.Module):
-    """A class for testing tensorrt deployment
+    """A class for testing tensorrt deployment.
 
     Args:
         trt_file (str): The path to the tensorrt file.
@@ -167,3 +167,15 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+    # Following strings of text style are from colorama package
+    bright_style, reset_style = '\x1b[1m', '\x1b[0m'
+    red_text, blue_text = '\x1b[31m', '\x1b[34m'
+    white_background = '\x1b[107m'
+
+    msg = white_background + bright_style + red_text
+    msg += 'DeprecationWarning: This tool will be deprecated in future. '
+    msg += blue_text + 'Welcome to use the unified model deployment toolbox '
+    msg += 'MMDeploy: https://github.com/open-mmlab/mmdeploy'
+    msg += reset_style
+    warnings.warn(msg)

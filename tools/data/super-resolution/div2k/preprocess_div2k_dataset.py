@@ -322,7 +322,7 @@ def make_lmdb(data_path,
 
 
 def read_img_worker(path, key, compress_level):
-    """Read image worker
+    """Read image worker.
 
     Args:
         path (str): Image path.
@@ -351,14 +351,23 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--data-root', help='dataset root')
     parser.add_argument(
-        '--scales', nargs='*', default=[2, 3, 4], help='scale factor list')
+        '--scales',
+        nargs='*',
+        default=[2, 3, 4],
+        type=int,
+        help='scale factor list')
     parser.add_argument(
         '--crop-size',
         nargs='?',
         default=480,
+        type=int,
         help='cropped size for HR images')
     parser.add_argument(
-        '--step', nargs='?', default=240, help='step size for HR images')
+        '--step',
+        nargs='?',
+        default=240,
+        type=int,
+        help='step size for HR images')
     parser.add_argument(
         '--thresh-size',
         nargs='?',
@@ -372,7 +381,8 @@ def parse_args():
     parser.add_argument(
         '--n-thread',
         nargs='?',
-        default=20,
+        default=8,
+        type=int,
         help='thread number when using multiprocessing')
     parser.add_argument(
         '--make-lmdb',

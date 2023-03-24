@@ -10,7 +10,8 @@ model = dict(
         out_channels=3,
         mid_channels=64,
         num_blocks=23,
-        growth_channels=32),
+        growth_channels=32,
+        upscale_factor=scale),
     pixel_loss=dict(type='L1Loss', loss_weight=1.0, reduction='mean'))
 # model training and testing settings
 train_cfg = None
@@ -64,7 +65,7 @@ test_pipeline = [
         mean=[0, 0, 0],
         std=[1, 1, 1],
         to_rgb=True),
-    dict(type='Collect', keys=['lq', 'gt'], meta_keys=['lq_path', 'lq_path']),
+    dict(type='Collect', keys=['lq', 'gt'], meta_keys=['lq_path', 'gt_path']),
     dict(type='ImageToTensor', keys=['lq', 'gt'])
 ]
 

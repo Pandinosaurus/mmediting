@@ -1,6 +1,7 @@
 # TOFlow (IJCV'2019)
 
 <!-- [ALGORITHM] -->
+
 <details>
 <summary align="right">TOFlow (IJCV'2019)</summary>
 
@@ -21,9 +22,9 @@
 
 <br/>
 
-Evaluated on RGB channels.
-The metrics are `PSNR / SSIM` .
+在 RGB 通道上进行评估。
+我们使用 `PSNR` 和 `SSIM` 作为指标。
 
-|                                    Method                                     |       Vid4       |                                               Download                                                |
-| :---------------------------------------------------------------------------: | :--------------: | :---------------------------------------------------------------------------------------------------: |
-| [tof_x4_vimeo90k_official](/configs/restorers/tof/tof_x4_vimeo90k_official.py) | 24.4377 / 0.7433 | [model](https://download.openmmlab.com/mmediting/restorers/tof/tof_x4_vimeo90k_official-a569ff50.pth) |
+|                                      算法                                      |       Vid4       |                                                 下载                                                 |
+| :----------------------------------------------------------------------------: | :--------------: | :--------------------------------------------------------------------------------------------------: |
+| [tof_x4_vimeo90k_official](/configs/restorers/tof/tof_x4_vimeo90k_official.py) | 24.4377 / 0.7433 | [模型](https://download.openmmlab.com/mmediting/restorers/tof/tof_x4_vimeo90k_official-a569ff50.pth) |

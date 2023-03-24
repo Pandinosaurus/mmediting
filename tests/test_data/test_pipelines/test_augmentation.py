@@ -1,18 +1,21 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import copy
+import os.path as osp
 
 import numpy as np
 import pytest
 import torch
 
-from mmedit.datasets.pipelines import (BinarizeImage, CopyValues, Flip,
-                                       GenerateFrameIndices,
+# yapf: disable
+from mmedit.datasets.pipelines import (BinarizeImage, ColorJitter, CopyValues,
+                                       Flip, GenerateFrameIndices,
                                        GenerateFrameIndiceswithPadding,
                                        GenerateSegmentIndices, MirrorSequence,
                                        Pad, Quantize, RandomAffine,
                                        RandomJitter, RandomMaskDilation,
                                        RandomTransposeHW, Resize,
                                        TemporalReverse, UnsharpMasking)
+from mmedit.datasets.pipelines.augmentation import RandomRotation
 
 
 class TestAugmentations:
@@ -52,8 +55,8 @@ class TestAugmentations:
 
     @staticmethod
     def check_flip(origin_img, result_img, flip_type):
-        """Check if the origin_img are flipped correctly into result_img
-        in different flip_types"""
+        """Check if the origin_img are flipped correctly into result_img in
+        different flip_types."""
         h, w, c = origin_img.shape
         if flip_type == 'horizontal':
             for i in range(h):
@@ -194,8 +197,7 @@ class TestAugmentations:
         """Check if the origin_img is padded correctly.
 
         Supported modes for checking are 'constant' (with 'constant_values' of
-        0) and 'reflect'.
-        Supported images should be 2 dimensional.
+        0) and 'reflect'. Supported images should be 2 dimensional.
         """
         if mode not in ['constant', 'reflect']:
             raise NotImplementedError(
@@ -262,7 +264,28 @@ class TestAugmentations:
 
         target_keys = ['fg', 'alpha']
 
+        # Test identical transformation
+        alpha = np.random.rand(4, 4).astype(np.float32)
+        fg = np.random.rand(4, 4).astype(np.float32)
+        results = dict(alpha=alpha, fg=fg)
+        random_affine = RandomAffine(['fg', 'alpha'],
+                                     degrees=0, flip_ratio=0.0)
+        random_affine_results = random_affine(results)
+        assert np.allclose(alpha, random_affine_results['alpha'])
+        assert np.allclose(fg, random_affine_results['fg'])
+
+        # Test flip in both direction
+        alpha = np.random.rand(4, 4).astype(np.float32)
+        fg = np.random.rand(4, 4).astype(np.float32)
+        results = dict(alpha=alpha, fg=fg)
+        random_affine = RandomAffine(['fg', 'alpha'],
+                                     degrees=0, flip_ratio=1.0)
+        random_affine_results = random_affine(results)
+        assert np.allclose(alpha[::-1, ::-1], random_affine_results['alpha'])
+        assert np.allclose(fg[::-1, ::-1], random_affine_results['fg'])
+
         # test random affine with different valid setting combinations
+        # only shape are tested
         alpha = np.random.rand(240, 320).astype(np.float32)
         fg = np.random.rand(240, 320).astype(np.float32)
         results = dict(alpha=alpha, fg=fg)
@@ -336,9 +359,58 @@ class TestAugmentations:
         assert repr(random_jitter) == random_jitter.__class__.__name__ + (
             'hue_range=(-50, 50)')
 
+    def test_color_jitter(self):
+
+        results = copy.deepcopy(self.results)
+        results['gt'] = (results['gt'] * 255).astype(np.uint8)
+        results['lq'] = [results['gt'], results['gt']]
+
+        target_keys = ['gt', 'lq']
+
+        color_jitter = ColorJitter(
+            keys=['gt', 'lq'],
+            brightness=0.5,
+            contrast=0.5,
+            saturation=0.5,
+            hue=0.5)
+        color_jitter_results = color_jitter(results)
+        assert self.check_keys_contain(color_jitter_results.keys(),
+                                       target_keys)
+        assert color_jitter_results['gt'].shape == self.img_gt.shape
+        color_jitter = ColorJitter(
+            keys=['gt', 'lq'],
+            channel_order='bgr',
+            brightness=0.5,
+            contrast=0.5,
+            saturation=0.5,
+            hue=0.5)
+        color_jitter_results = color_jitter(results)
+        assert self.check_keys_contain(color_jitter_results.keys(),
+                                       target_keys)
+        assert color_jitter_results['gt'].shape == self.img_gt.shape
+        assert np.abs(color_jitter_results['gt']-self.img_gt.shape).mean() > 0
+
+        assert repr(color_jitter) == color_jitter.__class__.__name__ + (
+            f'(keys={color_jitter.keys}, '
+            f'channel_order={color_jitter.channel_order}, '
+            f'brightness={color_jitter.transform.brightness}, '
+            f'contrast={color_jitter.transform.contrast}, '
+            f'saturation={color_jitter.transform.saturation}, '
+            f'hue={color_jitter.transform.hue})')
+
+        with pytest.raises(AssertionError):
+            color_jitter = ColorJitter(
+                keys=['gt', 'lq'],
+                channel_order='bgr',
+                to_rgb=True,
+                brightness=0.5,
+                contrast=0.5,
+                saturation=0.5,
+                hue=0.5)
+
     @staticmethod
     def check_transposehw(origin_img, result_img):
-        """Check if the origin_imgs are transposed correctly"""
+        """Check if the origin_imgs are transposed correctly."""
         h, w, c = origin_img.shape
         for i in range(c):
             for j in range(h):
@@ -470,7 +542,42 @@ class TestAugmentations:
             "(keys=['gt_img'], output_keys=['gt_img'], "
             'scale=(128, 128), '
             f'keep_ratio={False}, size_factor=None, '
-            'max_size=None,interpolation=bilinear)')
+            'max_size=None, interpolation=bilinear)')
+
+    def test_random_rotation(self):
+        with pytest.raises(ValueError):
+            RandomRotation(None, degrees=-10.0)
+        with pytest.raises(TypeError):
+            RandomRotation(None, degrees=('0.0', '45.0'))
+
+        target_keys = ['degrees']
+        results = copy.deepcopy(self.results)
+
+        random_rotation = RandomRotation(['img'], degrees=(0, 45))
+        random_rotation_results = random_rotation(results)
+        assert self.check_keys_contain(
+            random_rotation_results.keys(), target_keys)
+        assert random_rotation_results['img'].shape == (256, 256, 3)
+        assert random_rotation_results['degrees'] == (0, 45)
+        assert repr(random_rotation) == random_rotation.__class__.__name__ + (
+            "(keys=['img'], degrees=(0, 45))")
+
+        # test single degree integer
+        random_rotation = RandomRotation(['img'], degrees=45)
+        random_rotation_results = random_rotation(results)
+        assert self.check_keys_contain(
+            random_rotation_results.keys(), target_keys)
+        assert random_rotation_results['img'].shape == (256, 256, 3)
+        assert random_rotation_results['degrees'] == (-45, 45)
+
+        # test image dim == 2
+        grey_scale_img = np.random.rand(256, 256).astype(np.float32)
+        results = dict(img=grey_scale_img.copy())
+        random_rotation = RandomRotation(['img'], degrees=(0, 45))
+        random_rotation_results = random_rotation(results)
+        assert self.check_keys_contain(
+            random_rotation_results.keys(), target_keys)
+        assert random_rotation_results['img'].shape == (256, 256, 1)
 
     def test_frame_index_generation_with_padding(self):
         with pytest.raises(ValueError):
@@ -480,7 +587,7 @@ class TestAugmentations:
         results = dict(
             lq_path='fake_lq_root',
             gt_path='fake_gt_root',
-            key='000/00000000',
+            key=osp.join('000', '00000000'),
             max_frame_num=100,
             num_input_frames=5)
         target_keys = ['lq_path', 'gt_path', 'key']
@@ -490,8 +597,9 @@ class TestAugmentations:
         circle_idx = [3, 4, 0, 1, 2]
 
         # replicate
-        lq_paths = [f'fake_lq_root/000/{v:08d}.png' for v in replicate_idx]
-        gt_paths = ['fake_gt_root/000/00000000.png']
+        lq_paths = [osp.join('fake_lq_root', '000',
+                             f'{v:08d}.png') for v in replicate_idx]
+        gt_paths = [osp.join('fake_gt_root', '000', '00000000.png')]
         frame_index_generator = GenerateFrameIndiceswithPadding(
             padding='replicate')
         rlt = frame_index_generator(copy.deepcopy(results))
@@ -499,7 +607,8 @@ class TestAugmentations:
         assert rlt['lq_path'] == lq_paths
         assert rlt['gt_path'] == gt_paths
         # reflection
-        lq_paths = [f'fake_lq_root/000/{v:08d}.png' for v in reflection_idx]
+        lq_paths = [osp.join('fake_lq_root', '000',
+                             f'{v:08d}.png') for v in reflection_idx]
         frame_index_generator = GenerateFrameIndiceswithPadding(
             padding='reflection')
         rlt = frame_index_generator(copy.deepcopy(results))
@@ -507,7 +616,8 @@ class TestAugmentations:
         assert rlt['gt_path'] == gt_paths
         # reflection_circle
         lq_paths = [
-            f'fake_lq_root/000/{v:08d}.png' for v in reflection_circle_idx
+            osp.join('fake_lq_root', '000',
+                     f'{v:08d}.png') for v in reflection_circle_idx
         ]
         frame_index_generator = GenerateFrameIndiceswithPadding(
             padding='reflection_circle')
@@ -515,7 +625,8 @@ class TestAugmentations:
         assert rlt['lq_path'] == lq_paths
         assert rlt['gt_path'] == gt_paths
         # circle
-        lq_paths = [f'fake_lq_root/000/{v:08d}.png' for v in circle_idx]
+        lq_paths = [osp.join('fake_lq_root', '000',
+                             f'{v:08d}.png') for v in circle_idx]
         frame_index_generator = GenerateFrameIndiceswithPadding(
             padding='circle')
         rlt = frame_index_generator(copy.deepcopy(results))
@@ -525,7 +636,7 @@ class TestAugmentations:
         results = dict(
             lq_path='fake_lq_root',
             gt_path='fake_gt_root',
-            key='000/00000099',
+            key=osp.join('000', '00000099'),
             max_frame_num=100,
             num_input_frames=5)
         target_keys = ['lq_path', 'gt_path', 'key']
@@ -535,8 +646,9 @@ class TestAugmentations:
         circle_idx = [97, 98, 99, 95, 96]
 
         # replicate
-        lq_paths = [f'fake_lq_root/000/{v:08d}.png' for v in replicate_idx]
-        gt_paths = ['fake_gt_root/000/00000099.png']
+        lq_paths = [osp.join('fake_lq_root', '000',
+                             f'{v:08d}.png') for v in replicate_idx]
+        gt_paths = [osp.join('fake_gt_root', '000', '00000099.png')]
         frame_index_generator = GenerateFrameIndiceswithPadding(
             padding='replicate')
         rlt = frame_index_generator(copy.deepcopy(results))
@@ -544,7 +656,8 @@ class TestAugmentations:
         assert rlt['lq_path'] == lq_paths
         assert rlt['gt_path'] == gt_paths
         # reflection
-        lq_paths = [f'fake_lq_root/000/{v:08d}.png' for v in reflection_idx]
+        lq_paths = [osp.join('fake_lq_root', '000',
+                             f'{v:08d}.png') for v in reflection_idx]
         frame_index_generator = GenerateFrameIndiceswithPadding(
             padding='reflection')
         rlt = frame_index_generator(copy.deepcopy(results))
@@ -552,7 +665,8 @@ class TestAugmentations:
         assert rlt['gt_path'] == gt_paths
         # reflection_circle
         lq_paths = [
-            f'fake_lq_root/000/{v:08d}.png' for v in reflection_circle_idx
+            osp.join('fake_lq_root', '000',
+                     f'{v:08d}.png') for v in reflection_circle_idx
         ]
         frame_index_generator = GenerateFrameIndiceswithPadding(
             padding='reflection_circle')
@@ -560,7 +674,8 @@ class TestAugmentations:
         assert rlt['lq_path'] == lq_paths
         assert rlt['gt_path'] == gt_paths
         # circle
-        lq_paths = [f'fake_lq_root/000/{v:08d}.png' for v in circle_idx]
+        lq_paths = [osp.join('fake_lq_root', '000',
+                             f'{v:08d}.png') for v in circle_idx]
         frame_index_generator = GenerateFrameIndiceswithPadding(
             padding='circle')
         rlt = frame_index_generator(copy.deepcopy(results))
@@ -575,7 +690,7 @@ class TestAugmentations:
         results = dict(
             lq_path='fake_lq_root',
             gt_path='fake_gt_root',
-            key='000/00000010',
+            key=osp.join('000', '00000010'),
             num_input_frames=3)
         target_keys = ['lq_path', 'gt_path', 'key', 'interval']
         frame_index_generator = GenerateFrameIndices(
@@ -593,7 +708,7 @@ class TestAugmentations:
         assert self.check_keys_contain(rlt.keys(), target_keys)
 
         # index out of range
-        results['key'] = '000/00000099'
+        results['key'] = osp.join('000', '00000099')
         frame_index_generator = GenerateFrameIndices(interval_list=[2, 3])
         rlt = frame_index_generator(copy.deepcopy(results))
         assert self.check_keys_contain(rlt.keys(), target_keys)
@@ -656,7 +771,7 @@ class TestAugmentations:
         with pytest.raises(ValueError):
             frame_index_generator(copy.deepcopy(results))
 
-    def mirror_sequence(self):
+    def test_mirror_sequence(self):
         lqs = [np.random.rand(4, 4, 3) for _ in range(0, 5)]
         gts = [np.random.rand(16, 16, 3) for _ in range(0, 5)]
 
@@ -680,7 +795,7 @@ class TestAugmentations:
             results = dict(lq=0, gt=gts)
             mirror_sequence(results)
 
-    def quantize(self):
+    def test_quantize(self):
         results = {}
 
         # clip (>1)
@@ -705,14 +820,22 @@ class TestAugmentations:
             model(results)['gt'], (1 / 255.) * np.ones(
                 (1, 1, 3)).astype(np.float32))
 
-    def copy_value(self):
+    def test_copy_value(self):
+        with pytest.raises(AssertionError):
+            CopyValues(src_keys='gt', dst_keys='lq')
+        with pytest.raises(ValueError):
+            CopyValues(src_keys=['gt', 'mask'], dst_keys=['lq'])
+
         results = {}
         results['gt'] = np.zeros((1)).astype(np.float32)
 
-        copy_ = CopyValues(src_key='gt', dst_key='lq')
+        copy_ = CopyValues(src_keys=['gt'], dst_keys=['lq'])
         assert np.array_equal(copy_(results)['lq'], results['gt'])
+        assert repr(copy_) == copy_.__class__.__name__ + (
+            "(src_keys=['gt'])"
+            "(dst_keys=['lq'])")
 
-    def unsharp_masking(self):
+    def test_unsharp_masking(self):
         results = {}
 
         unsharp_masking = UnsharpMasking(

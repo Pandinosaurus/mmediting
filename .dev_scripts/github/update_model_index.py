@@ -7,10 +7,12 @@
 # detected before a commit.
 
 import glob
-import os.path as osp
+import os
+import posixpath as osp  # Even on windows, use posixpath
 import re
 import sys
 import warnings
+from functools import reduce
 
 import mmcv
 
@@ -33,7 +35,9 @@ def dump_yaml_and_check_difference(obj, file):
         Bool: If the target YAML file is different from the original.
     """
 
-    str_dump = mmcv.dump(obj, None, file_format='yaml', sort_keys=True)
+    str_dump = mmcv.dump(
+        obj, None, file_format='yaml', sort_keys=True,
+        line_break='\n')  # force use LF
 
     if osp.isfile(file):
         file_exists = True
@@ -76,56 +80,94 @@ def get_task_name(md_file):
     """Get task name from README.md".
 
     Args:
-        md_file: Path to .md file.
+        md_file (str): Path to .md file.
 
     Returns:
         Str: Task name.
     """
-    layers = md_file.split('/')
+    layers = re.split(r'[\\/]', md_file)
     for i in range(len(layers) - 1):
         if layers[i] == 'configs':
-            return layers[i + 1]
+            return layers[i + 1].capitalize()
     return 'Unknown'
+
+
+def generate_unique_name(md_file):
+    """Search config files and return the unique name of them.
+
+    Args:
+        md_file (str): Path to .md file.
+    Returns:
+        dict: dict of unique name for each config file.
+    """
+    files = os.listdir(osp.dirname(md_file))
+    config_files = [f[:-3] for f in files if f[-3:] == '.py']
+    config_files.sort()
+    config_files.sort(key=lambda x: len(x))
+    split_names = [f.split('_') for f in config_files]
+    config_sets = [set(f.split('_')) for f in config_files]
+    common_set = reduce(lambda x, y: x & y, config_sets)
+    unique_lists = [[n for n in name if n not in common_set]
+                    for name in split_names]
+
+    unique_dict = dict()
+    name_list = []
+    for i, f in enumerate(config_files):
+        base = split_names[i][0]
+        unique_dict[f] = base
+        if len(unique_lists[i]) > 0:
+            for unique in unique_lists[i]:
+                candidate_name = f'{base}_{unique}'
+                if candidate_name not in name_list and base != unique:
+                    unique_dict[f] = candidate_name
+                    name_list.append(candidate_name)
+                    break
+    return unique_dict
 
 
 def parse_md(md_file):
     """Parse .md file and convert it to a .yml file which can be used for MIM.
 
     Args:
-        md_file: Path to .md file.
+        md_file (str): Path to .md file.
     Returns:
         Bool: If the target YAML file is different from the original.
     """
+    # See https://github.com/open-mmlab/mmediting/pull/798 for these comments
+    # unique_dict = generate_unique_name(md_file)
+
     collection_name = osp.splitext(osp.basename(md_file))[0]
+    readme = osp.relpath(md_file, MMEditing_ROOT)
+    readme = readme.replace('\\', '/')  # for windows
     collection = dict(
         Name=collection_name,
         Metadata={'Architecture': []},
-        README=osp.relpath(md_file, MMEditing_ROOT),
+        README=readme,
         Paper=[])
     models = []
-    with open(md_file, 'r') as md:
+    # force utf-8 instead of system defined
+    with open(md_file, 'r', encoding='utf-8') as md:
         lines = md.readlines()
         i = 0
+        name = lines[0][2:]
+        name = name.split('(', 1)[0].strip()
+        collection['Metadata']['Architecture'].append(name)
+        collection['Name'] = name
+        collection_name = name
         while i < len(lines):
             # parse reference
-            if lines[i][:2] == '<!':
-                j = i + 1
-                while len(lines[j]) < 8 or lines[j][:8] != '<summary':
-                    j += 1
-                url, name = re.findall(r'<a href="(.*)">(.*)</a>', lines[j])[0]
-                name = name.split('(', 1)[0].strip()
-                # get architecture
-                if 'ALGORITHM' in lines[i] or 'BACKBONE' in lines[i]:
-                    collection['Metadata']['Architecture'].append(name)
-                    collection['Name'] = name
-                    collection_name = name
-                # get paper url
+            if lines[i].startswith('> ['):
+                url = re.match(r'> \[.*]\((.*)\)', lines[i])
+                url = url.groups()[0]
                 collection['Paper'].append(url)
-                i = j + 1
+                i += 1
 
             # parse table
-            elif lines[i][0] == '|' and i + 1 < len(lines) and \
-                    (lines[i + 1][:3] == '| :' or lines[i + 1][:2] == '|:'):
+            elif (lines[i][0] == '|') and (i + 1 < len(lines)) and (
+                    lines[i + 1][:3] == '| :' or lines[i + 1][:2] == '|:'
+                    or lines[i + 1][:2] == '|-') and (
+                        'SKIP THIS TABLE' not in lines[i - 2]  # for aot-gan
+                    ):
                 cols = [col.strip() for col in lines[i].split('|')][1:-1]
                 config_idx = cols.index('Method')
                 checkpoint_idx = cols.index('Download')
@@ -157,8 +199,17 @@ def parse_md(md_file):
                         right = line[checkpoint_idx].index(')', left)
                         checkpoint = line[checkpoint_idx][left:right]
 
-                    model_name = osp.splitext(config)[0].replace(
-                        'configs/', '', 1).replace('/', '--')
+                    name_key = osp.splitext(osp.basename(config))[0]
+                    model_name = name_key
+                    # See https://github.com/open-mmlab/mmediting/pull/798
+                    # for these comments
+                    # if name_key in unique_dict:
+                    #     model_name = unique_dict[name_key]
+                    # else:
+                    #     model_name = name_key
+                    #     warnings.warn(
+                    #         f'Config file of {model_name} is not found,'
+                    #         'please check it again.')
 
                     # find dataset in config file
                     dataset = 'Others'
@@ -184,11 +235,14 @@ def parse_md(md_file):
                             except ValueError:
                                 metrics_data = metrics_data.replace(' ', '')
                         else:
-                            metrics_data = [
-                                float(d) for d in metrics_data.split('/')
-                            ]
-                            metrics[key] = dict(
-                                PSNR=metrics_data[0], SSIM=metrics_data[1])
+                            try:
+                                metrics_data = [
+                                    float(d) for d in metrics_data.split('/')
+                                ]
+                                metrics[key] = dict(
+                                    PSNR=metrics_data[0], SSIM=metrics_data[1])
+                            except ValueError:
+                                pass
 
                     model = {
                         'Name':
@@ -235,8 +289,11 @@ def update_model_index():
     yml_files.sort()
 
     model_index = {
-        'Import':
-        [osp.relpath(yml_file, MMEditing_ROOT) for yml_file in yml_files]
+        'Import': [
+            osp.relpath(yml_file, MMEditing_ROOT).replace(
+                '\\', '/')  # force using / as path separators
+            for yml_file in yml_files
+        ]
     }
     model_index_file = osp.join(MMEditing_ROOT, 'model-index.yml')
     is_different = dump_yaml_and_check_difference(model_index,
